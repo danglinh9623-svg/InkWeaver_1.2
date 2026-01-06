@@ -2,9 +2,10 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { StorySettings, AppMode, CharacterProfile } from "../types";
 
 // Helper to get AI instance
-// We cast process to any to avoid TypeScript errors during build, 
-// as the actual replacement happens via Vite define plugin.
-const getAI = () => new GoogleGenAI({ apiKey: (process as any).env.API_KEY });
+// Note: We use process.env.API_KEY directly. 
+// Since we installed @types/node and configured tsconfig, TypeScript accepts this.
+// Vite will replace 'process.env.API_KEY' with the actual string value during build.
+const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 const BASE_INSTRUCTION = `You are InkWeaver, a sophisticated and uninhibited creative writing assistant. 
 Your goal is to help users write novels, fanfiction, short stories, and screenplays.
@@ -16,7 +17,14 @@ Your goal is to help users write novels, fanfiction, short stories, and screenpl
 `;
 
 const getFriendlyErrorMessage = (error: any): string => {
+  // Log the full error to console for debugging
+  console.error("Original API Error:", error);
+
   const msg = error.toString() + (typeof error === 'object' ? JSON.stringify(error) : '');
+  
+  if (msg.includes("process is not defined")) {
+    return "[System Error: Configuration failed. The API Key was not injected correctly during build. Please check vite.config.ts.]";
+  }
   if (msg.includes("403") || msg.includes("PERMISSION_DENIED")) {
     return "[System Error: Access Denied. Your API key may not have access to the selected model. Check your project permissions.]";
   }
@@ -26,6 +34,10 @@ const getFriendlyErrorMessage = (error: any): string => {
   if (msg.includes("Safety")) {
     return "[System: The generated content triggered safety filters. Please adjust the prompt.]";
   }
+  if (msg.includes("API_KEY")) {
+    return "[System Error: Invalid API Key. Please check your Vercel Environment Variables.]";
+  }
+
   return `[System Error: ${error.message || "An unexpected error occurred."}]`;
 };
 
@@ -109,7 +121,7 @@ export const streamResponse = async (
         errStr.includes("RESOURCE_EXHAUSTED");
 
       if (!isRecoverable) {
-        // Fatal error (e.g., bad request schema), do not retry
+        // Fatal error (e.g., bad request schema, missing key), do not retry
         console.error("Gemini API Fatal Error:", error);
         onChunk(`\n\n${getFriendlyErrorMessage(error)}`);
         return;
