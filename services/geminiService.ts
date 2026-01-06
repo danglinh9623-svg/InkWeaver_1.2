@@ -2,7 +2,9 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { StorySettings, AppMode, CharacterProfile } from "../types";
 
 // Helper to get AI instance
-const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
+// We cast process to any to avoid TypeScript errors during build, 
+// as the actual replacement happens via Vite define plugin.
+const getAI = () => new GoogleGenAI({ apiKey: (process as any).env.API_KEY });
 
 const BASE_INSTRUCTION = `You are InkWeaver, a sophisticated and uninhibited creative writing assistant. 
 Your goal is to help users write novels, fanfiction, short stories, and screenplays.
