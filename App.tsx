@@ -19,7 +19,8 @@ import {
   MessageSquare,
   History,
   Menu,
-  X
+  X,
+  Smartphone
 } from 'lucide-react';
 
 const INITIAL_MESSAGE: Message = {
@@ -41,6 +42,9 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showMobileHistory, setShowMobileHistory] = useState(false); // Mobile sidebar toggle
   
+  // PWA Install State
+  const [installPrompt, setInstallPrompt] = useState<any>(null);
+  
   // Settings State
   const [settings, setSettings] = useState<StorySettings>({
     genre: 'General Fiction',
@@ -57,6 +61,22 @@ function App() {
   useEffect(() => {
     const loaded = getSessions();
     setSessions(loaded);
+  }, []);
+
+  // Handle PWA Install Prompt
+  useEffect(() => {
+    const handler = (e: any) => {
+      // Prevent the mini-infobar from appearing on mobile
+      e.preventDefault();
+      // Stash the event so it can be triggered later.
+      setInstallPrompt(e);
+    };
+
+    window.addEventListener('beforeinstallprompt', handler);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handler);
+    };
   }, []);
 
   // Save Session Effect
@@ -124,13 +144,43 @@ function App() {
     }
   };
 
+  const handleInstallApp = async () => {
+    if (!installPrompt) return;
+    
+    // Show the install prompt
+    installPrompt.prompt();
+    
+    // Wait for the user to respond to the prompt
+    const { outcome } = await installPrompt.userChoice;
+    
+    // We've used the prompt, and can't use it again, throw it away
+    if (outcome === 'accepted') {
+      setInstallPrompt(null);
+    }
+  };
+
   // Logic to process a response (used by Send and Regenerate)
   const processResponse = async (history: Message[], userText: string) => {
-    // Generate Title if this is the first real user message in a new session
-    if (currentSessionId && history.length === 2) { // Init + User
-      generateTitle(userText).then(title => {
-         setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, title } : s));
-    });
+    // Generate Title Logic
+    // We check if we have a session ID, and if the current title is "default" or missing.
+    // We also limit it to the first few turns to avoid renaming long stories constantly.
+    if (currentSessionId && history.length <= 4) {
+      const currentSession = sessions.find(s => s.id === currentSessionId);
+      const isDefaultTitle = !currentSession || 
+                             currentSession.title === 'New Story Idea' || 
+                             currentSession.title === 'Untitled Story';
+      
+      if (isDefaultTitle) {
+        // We trigger title generation in background
+        generateTitle(userText).then(title => {
+           setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, title } : s));
+           // Force update local storage for the title immediately to prevent loss
+           const sessionToUpdate = getSessions().find(s => s.id === currentSessionId);
+           if (sessionToUpdate) {
+             saveSession({ ...sessionToUpdate, title });
+           }
+        });
+      }
     }
 
     // Placeholder Bot Message
@@ -342,9 +392,19 @@ function App() {
           </div>
         </div>
 
-        <div className="p-4 border-t border-ink-800">
+        <div className="p-4 border-t border-ink-800 space-y-2">
+           {/* PWA Install Button (Only visible if prompt is captured) */}
+           {installPrompt && (
+             <button 
+               onClick={handleInstallApp}
+               className="w-full flex items-center justify-center gap-2 p-2 rounded bg-ink-800 text-accent-light hover:bg-ink-700 hover:text-white text-sm transition font-medium"
+             >
+               <Smartphone size={16} /> Install App
+             </button>
+           )}
+           
            <button onClick={downloadChat} className="w-full flex items-center justify-center gap-2 p-2 rounded hover:bg-ink-800 text-ink-400 hover:text-white text-sm transition">
-             <Download size={16} /> Export
+             <Download size={16} /> Export Chat
            </button>
         </div>
     </>
