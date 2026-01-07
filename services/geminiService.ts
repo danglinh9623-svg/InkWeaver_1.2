@@ -2,10 +2,16 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { StorySettings, AppMode, CharacterProfile } from "../types";
 
 // Helper to get AI instance
-// Note: We use process.env.API_KEY directly. 
-// Since we installed @types/node and configured tsconfig, TypeScript accepts this.
-// Vite will replace 'process.env.API_KEY' with the actual string value during build.
-const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
+const getAI = () => {
+  const apiKey = process.env.API_KEY;
+  
+  // Explicit validation for the API key
+  if (!apiKey || typeof apiKey !== 'string' || apiKey.trim() === '' || apiKey.includes('undefined')) {
+    throw new Error("MISSING_API_KEY");
+  }
+  
+  return new GoogleGenAI({ apiKey: apiKey });
+};
 
 const BASE_INSTRUCTION = `You are InkWeaver, a sophisticated and uninhibited creative writing assistant. 
 Your goal is to help users write novels, fanfiction, short stories, and screenplays.
@@ -21,24 +27,34 @@ const getFriendlyErrorMessage = (error: any): string => {
   console.error("Original API Error:", error);
 
   const msg = error.toString() + (typeof error === 'object' ? JSON.stringify(error) : '');
+  const errMsg = error.message || "";
   
+  // Custom check for missing key
+  if (errMsg === "MISSING_API_KEY" || msg.includes("MISSING_API_KEY")) {
+    return "[System Error: API Key is missing. Please go to Vercel > Settings > Environment Variables and add your API_KEY.]";
+  }
+
   if (msg.includes("process is not defined")) {
     return "[System Error: Configuration failed. The API Key was not injected correctly during build. Please check vite.config.ts.]";
   }
   if (msg.includes("403") || msg.includes("PERMISSION_DENIED")) {
-    return "[System Error: Access Denied. Your API key may not have access to the selected model. Check your project permissions.]";
+    return "[System Error: Access Denied. Your API key may not have access to the selected model. Check your Google AI Studio project.]";
   }
   if (msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED")) {
-    return "[System Error: Quota Exceeded. You are strictly rate-limited.]";
+    return "[System Error: Quota Exceeded. You are strictly rate-limited by Google. Please try again in a few minutes.]";
   }
   if (msg.includes("Safety")) {
-    return "[System: The generated content triggered safety filters. Please adjust the prompt.]";
+    return "[System: The generated content triggered safety filters. Please adjust the prompt to be less explicit or controversial.]";
   }
   if (msg.includes("API_KEY")) {
     return "[System Error: Invalid API Key. Please check your Vercel Environment Variables.]";
   }
+  if (msg.includes("Failed to fetch")) {
+    return "[System Error: Network connection failed. Please check your internet connection.]";
+  }
 
-  return `[System Error: ${error.message || "An unexpected error occurred."}]`;
+  // Fallback: Try to show the actual error message if it exists
+  return `[System Error: ${errMsg || "An unexpected error occurred."}]`;
 };
 
 // Helper to handle stream processing
@@ -70,12 +86,16 @@ export const streamResponse = async (
   onChunk: (text: string) => void,
   onSources?: (sources: { uri: string; title: string }[]) => void
 ) => {
-  const ai = getAI();
+  
+  let ai;
+  try {
+    ai = getAI();
+  } catch (e: any) {
+    onChunk(`\n\n${getFriendlyErrorMessage(e)}`);
+    return;
+  }
   
   // Model Fallback Chain
-  // 1. Gemini 3 Pro (Most capable, newest)
-  // 2. Gemini 3 Flash (Fast, new)
-  // 3. Gemini 2.5 Flash (Reliable fallback)
   const modelsToTry = ['gemini-3-pro-preview', 'gemini-3-flash-preview', 'gemini-2.5-flash-latest'];
   
   let tools: any[] = [];
@@ -121,14 +141,12 @@ export const streamResponse = async (
         errStr.includes("RESOURCE_EXHAUSTED");
 
       if (!isRecoverable) {
-        // Fatal error (e.g., bad request schema, missing key), do not retry
         console.error("Gemini API Fatal Error:", error);
         onChunk(`\n\n${getFriendlyErrorMessage(error)}`);
         return;
       }
       
       console.warn(`Model ${modelName} failed, retrying with next...`, errStr);
-      // Continue loop to next model
     }
   }
 
@@ -138,21 +156,25 @@ export const streamResponse = async (
 };
 
 export const generateTitle = async (prompt: string): Promise<string> => {
-  const ai = getAI();
-  const modelsToTry = ['gemini-3-flash-preview', 'gemini-2.5-flash-latest'];
+  try {
+    const ai = getAI();
+    const modelsToTry = ['gemini-3-flash-preview', 'gemini-2.5-flash-latest'];
 
-  for (const model of modelsToTry) {
-    try {
-      const response = await ai.models.generateContent({
-        model: model,
-        contents: `Generate a short, catchy title (max 5 words) for a story based on this idea: "${prompt}". Return ONLY the title.`,
-      });
-      return response.text?.replace(/"/g, '').trim() || "Untitled Story";
-    } catch (e) {
-      console.warn(`Title generation failed on ${model}`, e);
+    for (const model of modelsToTry) {
+      try {
+        const response = await ai.models.generateContent({
+          model: model,
+          contents: `Generate a short, catchy title (max 5 words) for a story based on this idea: "${prompt}". Return ONLY the title.`,
+        });
+        return response.text?.replace(/"/g, '').trim() || "Untitled Story";
+      } catch (e) {
+        console.warn(`Title generation failed on ${model}`, e);
+      }
     }
+    return "New Story";
+  } catch (e) {
+    return "New Story";
   }
-  return "New Story";
 };
 
 /**
@@ -163,41 +185,44 @@ export const generateCharacterAttribute = async (
   currentProfile: CharacterProfile,
   genre: string
 ): Promise<string> => {
-  const ai = getAI();
-  const prompt = `
-    Context: Creating a character for a ${genre} story.
-    Current Character Details:
-    Name: ${currentProfile.name || 'Unnamed'}
-    Role: ${currentProfile.role || 'Unknown'}
-    Age: ${currentProfile.age || 'Unknown'}
-    Appearance: ${currentProfile.appearance || 'Not defined yet'}
-    Backstory: ${currentProfile.backstory || 'Not defined yet'}
-    Personality: ${currentProfile.personality || 'Not defined yet'}
-    
-    TASK: Generate a creative, unique, and deep description for the field: "${targetField}".
-    Do not repeat existing info. Make it compelling and fitting for the genre.
-    Return ONLY the content for this field.
-  `;
+  try {
+    const ai = getAI();
+    const prompt = `
+      Context: Creating a character for a ${genre} story.
+      Current Character Details:
+      Name: ${currentProfile.name || 'Unnamed'}
+      Role: ${currentProfile.role || 'Unknown'}
+      Age: ${currentProfile.age || 'Unknown'}
+      Appearance: ${currentProfile.appearance || 'Not defined yet'}
+      Backstory: ${currentProfile.backstory || 'Not defined yet'}
+      Personality: ${currentProfile.personality || 'Not defined yet'}
+      
+      TASK: Generate a creative, unique, and deep description for the field: "${targetField}".
+      Do not repeat existing info. Make it compelling and fitting for the genre.
+      Return ONLY the content for this field.
+    `;
 
-  const modelsToTry = ['gemini-3-flash-preview', 'gemini-2.5-flash-latest'];
+    const modelsToTry = ['gemini-3-flash-preview', 'gemini-2.5-flash-latest'];
 
-  for (const model of modelsToTry) {
-    try {
-      const response = await ai.models.generateContent({
-        model: model,
-        contents: prompt,
-        config: {
-          temperature: 1.1,
+    for (const model of modelsToTry) {
+      try {
+        const response = await ai.models.generateContent({
+          model: model,
+          contents: prompt,
+          config: {
+            temperature: 1.1,
+          }
+        });
+        return response.text?.trim() || "";
+      } catch (e: any) {
+        console.warn(`Char Gen failed on ${model}`, e);
+        if (model === modelsToTry[modelsToTry.length - 1]) {
+          return getFriendlyErrorMessage(e);
         }
-      });
-      return response.text?.trim() || "";
-    } catch (e: any) {
-      console.warn(`Char Gen failed on ${model}`, e);
-      // Continue to next model if available
-      if (model === modelsToTry[modelsToTry.length - 1]) {
-        return getFriendlyErrorMessage(e);
       }
     }
+    return "Could not generate content. Please try again later.";
+  } catch (e: any) {
+    return getFriendlyErrorMessage(e);
   }
-  return "Could not generate content. Please try again later.";
 };
